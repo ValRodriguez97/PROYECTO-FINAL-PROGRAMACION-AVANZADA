@@ -1,0 +1,98 @@
+maquina_estados:
+  entidad: SolicitudAcademica
+  descripcion: >
+    Una solicitud académica pasa por cinco estados a lo largo de su ciclo de vida.
+    El flujo es siempre hacia adelante: no se puede retroceder ni saltar estados.
+    Cuando llega a CERRADA ya no puede modificarse.
+  estado_inicial: REGISTRADA
+  estado_terminal: CERRADA
+
+  diagrama: |
+    REGISTRADA → CLASIFICADA → EN_ATENCION → ATENDIDA → CERRADA
+
+  estados:
+
+    REGISTRADA:
+      descripcion: >
+        La solicitud acaba de ingresar al sistema. Todavía no fue revisada
+        ni categorizada por nadie. Es el punto de partida de cualquier trámite.
+      es_terminal: false
+
+    CLASIFICADA:
+      descripcion: >
+        Alguien revisó la solicitud y le asignó un tipo (homologación, registro
+        de asignaturas, etc.). A partir de aquí ya se puede calcular la prioridad
+        con el motor de reglas.
+      es_terminal: false
+
+    EN_ATENCION:
+      descripcion: >
+        Un responsable está trabajando activamente en el trámite. Indica que
+        la solicitud no está olvidada sino en proceso.
+      es_terminal: false
+
+    ATENDIDA:
+      descripcion: >
+        El trámite fue resuelto. Desde este estado solo queda formalizarlo con
+        un cierre, para lo cual se exige dejar una observación del resultado.
+      es_terminal: false
+
+    CERRADA:
+      descripcion: >
+        Estado final. La solicitud quedó cerrada con su observación de resultado
+        y ya no puede tocarse bajo ningún concepto.
+      es_terminal: true
+
+  transiciones:
+
+    - id: T1
+      desde: REGISTRADA
+      hacia: CLASIFICADA
+      descripcion: Se revisa la solicitud y se le asigna un tipo
+      endpoint: PUT /api/solicitudes/{id}/clasificar
+      quien_puede: [DOCENTE, ADMINISTRATIVO]
+      condiciones:
+        - La solicitud debe estar en REGISTRADA
+
+    - id: T2
+      desde: CLASIFICADA
+      hacia: EN_ATENCION
+      descripcion: Se da inicio formal a la atención del trámite
+      endpoint: PUT /api/solicitudes/{id}/estado
+      quien_puede: [DOCENTE, ADMINISTRATIVO]
+      condiciones:
+        - La solicitud debe estar en CLASIFICADA
+
+    - id: T3
+      desde: EN_ATENCION
+      hacia: ATENDIDA
+      descripcion: El responsable indica que ya resolvió la solicitud
+      endpoint: PUT /api/solicitudes/{id}/estado
+      quien_puede: [DOCENTE, ADMINISTRATIVO]
+      condiciones:
+        - La solicitud debe estar en EN_ATENCION
+
+    - id: T4
+      desde: ATENDIDA
+      hacia: CERRADA
+      descripcion: Cierre formal del trámite con registro del resultado
+      endpoint: PUT /api/solicitudes/{id}/cerrar
+      quien_puede: [DOCENTE, ADMINISTRATIVO]
+      condiciones:
+        - La solicitud debe estar en ATENDIDA
+        - La observación de cierre es obligatoria (mínimo 10 caracteres)
+
+  transiciones_invalidas:
+    descripcion: >
+      El ValidadorTransicionEstado bloquea cualquier movimiento que no esté
+      en la lista de arriba. Algunos ejemplos de lo que no está permitido:
+    ejemplos:
+      - caso: intentar reabrir una solicitud cerrada
+        desde: CERRADA
+        hacia: cualquier estado
+      - caso: retroceder en el flujo
+        desde: EN_ATENCION
+        hacia: REGISTRADA
+      - caso: saltar estados intermedios
+        desde: REGISTRADA
+        hacia: ATENDIDA

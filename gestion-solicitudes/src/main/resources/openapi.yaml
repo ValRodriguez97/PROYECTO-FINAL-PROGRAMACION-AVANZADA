@@ -1,0 +1,897 @@
+openapi: 3.0.3
+info:
+  title: Sistema de Triage y Gestión de Solicitudes Académicas
+  description: |
+    Contratos de la API REST del sistema de gestión de solicitudes académicas
+    para el Programa de Ingeniería de Sistemas y Computación.
+
+    La máquina de estados completa está documentada en `estados.yaml`.
+    La integración con IA es opcional; el sistema funciona sin ella (RF-11).
+  version: 1.0.0
+  contact:
+    name: Equipo de Desarrollo — Proyecto Avanzada
+
+servers:
+  - url: http://localhost:8080/api
+    description: Servidor local de desarrollo
+
+tags:
+  - name: Solicitudes
+    description: Registro, consulta y cierre de solicitudes académicas
+  - name: Estado
+    description: Transiciones en el ciclo de vida de la solicitud
+  - name: Responsables
+    description: Asignación de responsables
+  - name: Historial
+    description: Consulta del historial auditable
+  - name: IA
+    description: Funcionalidades opcionales asistidas por IA
+
+paths:
+
+  /solicitudes:
+    post:
+      tags: [Solicitudes]
+      summary: Registrar nueva solicitud
+      description: |
+        Crea una solicitud académica en el sistema (RF-01). El estado inicial
+        es REGISTRADA y se genera la primera entrada en el historial automáticamente.
+        Cualquier usuario autenticado puede registrar solicitudes.
+      operationId: registrarSolicitud
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SolicitudRequest'
+            example:
+              tipo: REGISTRO_ASIGNATURAS
+              descripcion: "Solicito registro en Arquitectura Empresarial, tengo aprobados todos los prerrequisitos según mi historia académica."
+              canalOrigen: CSU
+              fechaLimite: "2026-03-15T23:59:59"
+              impactoAcademico: 4
+              solicitanteId: 1
+      responses:
+        '201':
+          description: Solicitud creada correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    get:
+      tags: [Solicitudes]
+      summary: Listar solicitudes con filtros
+      description: |
+        Devuelve una lista paginada de solicitudes (RF-07). Los estudiantes solo
+        ven sus propias solicitudes; docentes y administrativos ven todas.
+      operationId: consultarSolicitudes
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: estado
+          in: query
+          schema:
+            $ref: '#/components/schemas/EstadoSolicitud'
+          description: Filtrar por estado actual
+        - name: tipo
+          in: query
+          schema:
+            $ref: '#/components/schemas/TipoSolicitud'
+          description: Filtrar por tipo de solicitud
+        - name: prioridad
+          in: query
+          schema:
+            $ref: '#/components/schemas/Prioridad'
+          description: Filtrar por nivel de prioridad
+        - name: responsableId
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: ID del responsable asignado
+        - name: solicitanteId
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: ID del usuario que originó la solicitud
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Página a consultar (base 0)
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+          description: Cantidad de resultados por página
+      responses:
+        '200':
+          description: Listado paginado de solicitudes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudPageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /solicitudes/{id}:
+    get:
+      tags: [Solicitudes]
+      summary: Obtener detalle de una solicitud
+      description: Retorna toda la información de una solicitud específica (RF-07).
+      operationId: obtenerSolicitud
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      responses:
+        '200':
+          description: Solicitud encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /solicitudes/{id}/clasificar:
+    put:
+      tags: [Solicitudes]
+      summary: Clasificar solicitud
+      description: |
+        Asigna el tipo definitivo a la solicitud (RF-02). Solo es válido si la
+        solicitud está en REGISTRADA. Ver transición T1 en `estados.yaml`.
+        Roles: DOCENTE, ADMINISTRATIVO.
+      operationId: clasificarSolicitud
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClasificarRequest'
+            example:
+              tipo: HOMOLOGACION
+      responses:
+        '200':
+          description: Solicitud clasificada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TransicionInvalida'
+
+  /solicitudes/{id}/priorizar:
+    put:
+      tags: [Solicitudes]
+      summary: Calcular y asignar prioridad
+      description: |
+        Ejecuta el motor de reglas sobre la solicitud para calcular su prioridad (RF-03).
+        Toma en cuenta el tipo, el impacto académico y la fecha límite.
+        La solicitud debe estar en CLASIFICADA.
+        Roles: DOCENTE, ADMINISTRATIVO.
+      operationId: priorizarSolicitud
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      responses:
+        '200':
+          description: Prioridad calculada y asignada a la solicitud
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultadoPrioridadResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TransicionInvalida'
+
+  /solicitudes/{id}/estado:
+    put:
+      tags: [Estado]
+      summary: Avanzar el estado de la solicitud
+      description: |
+        Cambia el estado validando la transición con el ValidadorTransicionEstado (RF-04).
+        Cubre las transiciones T2 y T3 definidas en `estados.yaml`.
+        Para cerrar una solicitud use `PUT /solicitudes/{id}/cerrar`.
+        Roles: DOCENTE, ADMINISTRATIVO.
+      operationId: cambiarEstado
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CambiarEstadoRequest'
+            example:
+              nuevoEstado: EN_ATENCION
+              observacion: "Derivada al equipo de registro académico para gestión."
+      responses:
+        '200':
+          description: Estado actualizado correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/TransicionInvalida'
+
+  /solicitudes/{id}/responsable:
+    put:
+      tags: [Responsables]
+      summary: Asignar responsable a la solicitud
+      description: |
+        Vincula un usuario responsable a la solicitud (RF-05). El usuario
+        debe tener activo = true; si no lo está se rechaza con 422.
+        El cambio queda registrado en el historial.
+        Solo disponible para el rol ADMINISTRATIVO.
+      operationId: asignarResponsable
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AsignarResponsableRequest'
+            example:
+              responsableId: 5
+              observacion: "Asignada al coordinador del área de registro."
+      responses:
+        '200':
+          description: Responsable asignado correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: El usuario indicado no está activo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2026-03-01T10:00:00"
+                status: 422
+                error: "Unprocessable Entity"
+                mensaje: "No se puede asignar al usuario 5 porque su cuenta está inactiva."
+                path: "/api/solicitudes/1/responsable"
+
+  /solicitudes/{id}/cerrar:
+    put:
+      tags: [Solicitudes]
+      summary: Cerrar solicitud
+      description: |
+        Finaliza el ciclo de vida de la solicitud (RF-08). Corresponde a la
+        transición T4 en `estados.yaml`. La solicitud debe estar en ATENDIDA
+        y la observación de cierre es obligatoria.
+        Una vez cerrada no puede modificarse de ninguna forma.
+        Roles: DOCENTE, ADMINISTRATIVO.
+      operationId: cerrarSolicitud
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CerrarSolicitudRequest'
+            example:
+              observacion: "Solicitud resuelta favorablemente. Se realizó el registro de la asignatura en el sistema académico."
+      responses:
+        '200':
+          description: Solicitud cerrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: La solicitud no está en estado ATENDIDA
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2026-03-01T10:00:00"
+                status: 409
+                error: "Conflict"
+                mensaje: "Solo se pueden cerrar solicitudes en estado ATENDIDA. Estado actual: EN_ATENCION."
+                path: "/api/solicitudes/1/cerrar"
+
+  /solicitudes/{id}/historial:
+    get:
+      tags: [Historial]
+      summary: Consultar historial de la solicitud
+      description: |
+        Devuelve todas las entradas del historial en orden cronológico (RF-06).
+        Cada entrada refleja una acción con fecha exacta y usuario responsable.
+      operationId: consultarHistorial
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      responses:
+        '200':
+          description: Historial de acciones de la solicitud
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HistorialSolicitudResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /solicitudes/{id}/sugerencia-ia:
+    get:
+      tags: [IA]
+      summary: Pedir sugerencia al asistente de IA
+      description: |
+        Consulta el AsistenteIA para obtener sugerencia de clasificación, prioridad
+        y/o resumen del historial (RF-09, RF-10). Si la IA no está disponible
+        responde 503 pero el sistema sigue operando normalmente (RF-11).
+        La sugerencia siempre requiere confirmación humana antes de aplicarse.
+      operationId: obtenerSugerenciaIA
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      responses:
+        '200':
+          description: Sugerencia generada por el modelo de lenguaje
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SugerenciaIAResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          description: Servicio de IA temporalmente no disponible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                timestamp: "2026-03-01T10:00:00"
+                status: 503
+                error: "Service Unavailable"
+                mensaje: "El asistente de IA no responde en este momento. Puede continuar operando sin él."
+                path: "/api/solicitudes/1/sugerencia-ia"
+
+  /solicitudes/{id}/sugerencia-ia/confirmar:
+    put:
+      tags: [IA]
+      summary: Confirmar o descartar sugerencia de IA
+      description: |
+        Permite al usuario revisar la sugerencia y decidir si la aplica (con o
+        sin ajustes) o la descarta (RF-10). Si aplicar es false la solicitud
+        no se modifica.
+      operationId: confirmarSugerenciaIA
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SolicitudId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmarSugerenciaRequest'
+            example:
+              aplicar: true
+              tipoAjustado: HOMOLOGACION
+              prioridadAjustada: ALTA
+      responses:
+        '200':
+          description: Decisión registrada y aplicada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token JWT obtenido al autenticarse en el sistema
+
+  parameters:
+    SolicitudId:
+      name: id
+      in: path
+      required: true
+      description: ID de la solicitud académica
+      schema:
+        type: integer
+        format: int64
+        example: 1
+
+  responses:
+    BadRequest:
+      description: Algún campo requerido está ausente o tiene un valor inválido
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2026-03-01T10:00:00"
+            status: 400
+            error: "Bad Request"
+            mensaje: "El campo 'descripcion' es requerido y no puede estar vacío."
+            path: "/api/solicitudes"
+
+    Unauthorized:
+      description: Token de autenticación ausente, inválido o expirado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2026-03-01T10:00:00"
+            status: 401
+            error: "Unauthorized"
+            mensaje: "Se requiere autenticación para acceder a este recurso."
+            path: "/api/solicitudes"
+
+    Forbidden:
+      description: El rol del usuario no tiene permiso para esta operación (RF-13)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2026-03-01T10:00:00"
+            status: 403
+            error: "Forbidden"
+            mensaje: "El rol ESTUDIANTE no puede clasificar solicitudes."
+            path: "/api/solicitudes/1/clasificar"
+
+    NotFound:
+      description: No se encontró la solicitud con el ID indicado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2026-03-01T10:00:00"
+            status: 404
+            error: "Not Found"
+            mensaje: "No existe una solicitud con id 99."
+            path: "/api/solicitudes/99"
+
+    Conflict:
+      description: Conflicto con el estado actual del recurso
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    TransicionInvalida:
+      description: La transición de estado solicitada no está permitida
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            timestamp: "2026-03-01T10:00:00"
+            status: 409
+            error: "Conflict"
+            mensaje: "No es posible pasar de EN_ATENCION a REGISTRADA."
+            path: "/api/solicitudes/1/estado"
+
+    UnprocessableEntity:
+      description: Los datos son válidos pero violan una regla de negocio
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+
+    TipoSolicitud:
+      type: string
+      description: Categoría de la solicitud académica (RF-02)
+      enum:
+        - REGISTRO_ASIGNATURAS
+        - HOMOLOGACION
+        - CANCELACION_ASIGNATURAS
+        - SOLICITUD_CUPOS
+        - CONSULTA_ACADEMICA
+        - OTRO
+
+    CanalOrigen:
+      type: string
+      description: Canal por el que ingresó la solicitud al sistema (RF-01)
+      enum:
+        - CSU
+        - CORREO
+        - SAC
+        - TELEFONO
+        - PRESENCIAL
+
+    EstadoSolicitud:
+      type: string
+      description: Estado actual de la solicitud. Ver flujo completo en estados.yaml.
+      enum:
+        - REGISTRADA
+        - CLASIFICADA
+        - EN_ATENCION
+        - ATENDIDA
+        - CERRADA
+
+    Prioridad:
+      type: string
+      description: Nivel de prioridad asignado por el motor de reglas (RF-03)
+      enum:
+        - CRITICA
+        - ALTA
+        - MEDIA
+        - BAJA
+
+    RolUsuario:
+      type: string
+      description: Rol del usuario dentro del sistema (RF-13)
+      enum:
+        - ESTUDIANTE
+        - DOCENTE
+        - ADMINISTRATIVO
+
+    # Requests
+    SolicitudRequest:
+      type: object
+      description: Cuerpo para registrar una nueva solicitud académica
+      required:
+        - tipo
+        - descripcion
+        - canalOrigen
+        - solicitanteId
+      properties:
+        tipo:
+          $ref: '#/components/schemas/TipoSolicitud'
+        descripcion:
+          type: string
+          description: Explicación detallada de lo que necesita el solicitante
+          minLength: 10
+          maxLength: 1000
+          example: "Requiero homologación de la materia Cálculo II cursada en otra universidad."
+        canalOrigen:
+          $ref: '#/components/schemas/CanalOrigen'
+        fechaLimite:
+          type: string
+          format: date-time
+          nullable: true
+          description: Si la solicitud tiene fecha límite, se usa para calcular la prioridad
+          example: "2026-03-15T23:59:59"
+        impactoAcademico:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Qué tan crítica es esta solicitud para el avance académico (1=bajo, 5=alto)
+          example: 4
+        solicitanteId:
+          type: integer
+          format: int64
+          description: ID del usuario que hace la solicitud
+          example: 1
+
+    ClasificarRequest:
+      type: object
+      description: Indica el tipo al que pertenece la solicitud
+      required:
+        - tipo
+      properties:
+        tipo:
+          $ref: '#/components/schemas/TipoSolicitud'
+
+    CambiarEstadoRequest:
+      type: object
+      description: Nuevo estado al que se quiere llevar la solicitud
+      required:
+        - nuevoEstado
+      properties:
+        nuevoEstado:
+          $ref: '#/components/schemas/EstadoSolicitud'
+        observacion:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Comentario opcional sobre el motivo del cambio
+
+    AsignarResponsableRequest:
+      type: object
+      description: Datos para vincular un responsable a la solicitud
+      required:
+        - responsableId
+      properties:
+        responsableId:
+          type: integer
+          format: int64
+          description: ID del usuario que se va a encargar de la solicitud
+          example: 5
+        observacion:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Nota opcional sobre la asignación
+
+    CerrarSolicitudRequest:
+      type: object
+      description: Datos para el cierre definitivo de la solicitud
+      required:
+        - observacion
+      properties:
+        observacion:
+          type: string
+          minLength: 10
+          maxLength: 1000
+          description: Descripción del resultado o resolución (obligatorio)
+          example: "Se aprobó la homologación. Materia registrada en el historial académico del estudiante."
+
+    ConfirmarSugerenciaRequest:
+      type: object
+      description: Respuesta del usuario a la sugerencia de la IA
+      required:
+        - aplicar
+      properties:
+        aplicar:
+          type: boolean
+          description: true para aplicar la sugerencia, false para descartarla
+        tipoAjustado:
+          $ref: '#/components/schemas/TipoSolicitud'
+          nullable: true
+          description: Tipo corregido por el usuario si difiere de la sugerencia
+        prioridadAjustada:
+          $ref: '#/components/schemas/Prioridad'
+          nullable: true
+          description: Prioridad corregida por el usuario si difiere de la sugerencia
+
+    # Responses
+    UsuarioResumen:
+      type: object
+      description: Datos básicos de un usuario incluidos en las respuestas
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 3
+        nombre:
+          type: string
+          example: "Carlos Ramírez"
+        email:
+          type: string
+          format: email
+          example: "c.ramirez@universidad.edu.co"
+        rol:
+          $ref: '#/components/schemas/RolUsuario'
+
+    SolicitudResponse:
+      type: object
+      description: Representación completa de una solicitud académica
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 7
+        tipo:
+          $ref: '#/components/schemas/TipoSolicitud'
+        descripcion:
+          type: string
+          example: "Solicito homologación de Cálculo II."
+        canalOrigen:
+          $ref: '#/components/schemas/CanalOrigen'
+        fechaRegistro:
+          type: string
+          format: date-time
+          example: "2026-03-01T08:30:00"
+        fechaLimite:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2026-03-15T23:59:59"
+        estado:
+          $ref: '#/components/schemas/EstadoSolicitud'
+        prioridad:
+          $ref: '#/components/schemas/Prioridad'
+          nullable: true
+        justificacionPrioridad:
+          type: string
+          nullable: true
+          description: Texto generado por el motor de reglas explicando el nivel asignado
+          example: "Prioridad ALTA: homologación con fecha límite en 14 días e impacto 4/5."
+        impactoAcademico:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 4
+        solicitante:
+          $ref: '#/components/schemas/UsuarioResumen'
+        responsable:
+          $ref: '#/components/schemas/UsuarioResumen'
+          nullable: true
+
+    SolicitudPageResponse:
+      type: object
+      description: Wrapper de paginación para listados de solicitudes
+      properties:
+        contenido:
+          type: array
+          items:
+            $ref: '#/components/schemas/SolicitudResponse'
+        paginaActual:
+          type: integer
+          example: 0
+        totalPaginas:
+          type: integer
+          example: 5
+        totalElementos:
+          type: integer
+          format: int64
+          example: 87
+
+    HistorialSolicitudResponse:
+      type: object
+      description: Registro de una acción realizada sobre la solicitud (RF-06)
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 10
+        fechaAccion:
+          type: string
+          format: date-time
+          example: "2026-03-01T09:15:00"
+        accionRealizada:
+          type: string
+          description: Descripción de lo que ocurrió en este punto del historial
+          example: "Cambio de estado: REGISTRADA → CLASIFICADA"
+        usuarioResponsable:
+          $ref: '#/components/schemas/UsuarioResumen'
+        observaciones:
+          type: string
+          nullable: true
+          example: "Clasificada como HOMOLOGACION por el coordinador del programa."
+        estadoAnterior:
+          $ref: '#/components/schemas/EstadoSolicitud'
+          nullable: true
+        estadoNuevo:
+          $ref: '#/components/schemas/EstadoSolicitud'
+          nullable: true
+
+    ResultadoPrioridadResponse:
+      type: object
+      description: Salida del motor de reglas de priorización (RF-03)
+      properties:
+        prioridad:
+          $ref: '#/components/schemas/Prioridad'
+        justificacion:
+          type: string
+          description: Explicación del porqué de la prioridad asignada
+          example: "CRITICA: homologación con fecha límite en 3 días e impacto académico máximo."
+        reglaAplicada:
+          type: string
+          description: Nombre de la regla que tuvo mayor peso en la decisión
+          example: "ReglaFechaLimiteCritica"
+        fechaEvaluacion:
+          type: string
+          format: date-time
+          example: "2026-03-01T09:20:00"
+
+    SugerenciaIAResponse:
+      type: object
+      description: Sugerencia generada por el AsistenteIA (RF-09, RF-10)
+      properties:
+        tipoSugerido:
+          $ref: '#/components/schemas/TipoSolicitud'
+        prioridadSugerida:
+          $ref: '#/components/schemas/Prioridad'
+        resumen:
+          type: string
+          description: Resumen del estado e historial generado por el modelo de lenguaje
+          example: "Solicitud de homologación ingresada el 01/03 por estudiante de 6to semestre. Sin responsable asignado hace 2 días."
+        confirmada:
+          type: boolean
+          description: Indica si el usuario ya revisó y confirmó esta sugerencia
+          example: false
+        fechaSugerencia:
+          type: string
+          format: date-time
+          example: "2026-03-01T09:25:00"
+
+    ErrorResponse:
+      type: object
+      description: Formato estándar para todas las respuestas de error
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+          example: 404
+        error:
+          type: string
+          example: "Not Found"
+        mensaje:
+          type: string
+          description: Descripción del error con contexto útil para el desarrollador
+          example: "No existe una solicitud con id 99."
+        path:
+          type: string
+          description: Endpoint donde ocurrió el error
+          example: "/api/solicitudes/99"
